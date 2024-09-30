@@ -1,0 +1,91 @@
+% -------------------------------------------------------------------------
+% Script to process shapefile data for different land use categories
+% Calculates area for specific land uses and writes results as shapefiles
+% -------------------------------------------------------------------------
+
+clear; clc;
+
+% Define the base directory for shapefiles
+baseDir = 'D:\IND_1093\OSM\1093_OSM_shp';
+outputDir = 'D:\IND_1093\OSM\osm_shp_area_extraction_area';
+A = dir(fullfile(baseDir, '*.shp'));
+
+% Initialize total sample size array
+total_sample_size = [];
+
+% Function to calculate area between geographic coordinates using Haversine formula
+calculateArea = @(lat1, lon1, lat2, lon2) ...
+    6371 * 2 * atan2(sqrt(sin(deg2rad(lat2-lat1)/2)^2 + cos(deg2rad(lat1)) * cos(deg2rad(lat2)) * sin(deg2rad(lon2-lon1)/2)^2), sqrt(1 - (sin(deg2rad(lat2-lat1)/2)^2 + cos(deg2rad(lat1)) * cos(deg2rad(lat2)) * sin(deg2rad(lon2-lon1)/2)^2)));
+
+% Loop through shapefiles for each land use category
+for landUseType = {'industrial', 'non-industrial', 'residential'}
+    
+    % Assign appropriate output subdirectory based on land use
+    if strcmp(landUseType, 'industrial')
+        outputSubDir = 'IND_shp_fin';
+    elseif strcmp(landUseType, 'non-industrial')
+        outputSubDir = 'NIND_shp_fin';
+    elseif strcmp(landUseType, 'residential')
+        outputSubDir = 'RES_shp_fin';
+    end
+    
+    % Process each shapefile
+    for i = 1:numel(A)
+        try
+            % Load the shapefile
+            S = shaperead(fullfile(baseDir, A(i).name));
+            MM = struct2table(S);  % Convert shapefile structure to table
+            
+            % Filter based on land use type
+            if strcmp(landUseType, 'industrial')
+                idx = ismember(MM.landuse, {'industrial'});
+            elseif strcmp(landUseType, 'non-industrial')
+                idx = ~ismember(MM.landuse, {'construction', 'industrial', 'residential'});
+            elseif strcmp(landUseType, 'residential')
+                idx = ismember(MM.landuse, {'residential'});
+            end
+            
+            % Extract relevant entries
+            T = MM(idx, :);
+            T.area = zeros(height(T), 1);  % Initialize area column
+            
+            % Calculate area for each entry
+            for mm = 1:height(T)
+                bbox = cell2mat(table2array(T(mm, 2)));
+                lon1 = bbox(1, 1); lat1 = bbox(1, 2);
+                lon2 = bbox(2, 1); lat2 = bbox(2, 2);
+                T.area(mm) = calculateArea(lat1, lon1, lat2, lon2);
+            end
+            
+            % Filter entries with area greater than 0.1 km²
+            idx2 = T.area > 0.1;
+            T1 = T(idx2, :);
+            total_sample_size(i, 1) = height(T1);
+            
+            % If valid entries exist, write to a new shapefile
+            if ~isempty(T1)
+                D = array2table((1:height(T1))', 'VariableNames', {'osm_id'});
+                T2 = [T1(:, 1:4), D];  % Append osm_id
+                
+                % Customize dbfspec for writing
+                dbfspec = makedbfspec(S);
+                FN = fieldnames(dbfspec);
+                dbfspec = rmfield(dbfspec, FN([1, 3:end]));  % Retain relevant fields
+                dbfspec.osm_id = dbfspec.(FN{1});  % Rename osm_id field
+                dbfspec = rmfield(dbfspec, FN{1});
+                dbfspec.osm_id.FieldName = 'osm_id';
+                
+                % Write the new shapefile
+                S1 = table2struct(T2);
+                shapewrite(S1, fullfile(outputDir, outputSubDir, A(i).name), 'DbfSpec', dbfspec);
+            end
+        catch ME
+            % Handle any errors that occur during processing
+            fprintf('Error processing file %s: %s\n', A(i).name, ME.message);
+        end
+    end
+end
+
+% -------------------------------------------------------------------------
+% End of Script
+% -------------------------------------------------------------------------
