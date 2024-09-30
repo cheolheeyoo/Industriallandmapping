@@ -1,0 +1,96 @@
+% -------------------------------------------------------------------------
+% Script for generating random samples from shapefiles for different clusters
+% The script processes Industrial, Residential, and Non-Industrial samples
+% -------------------------------------------------------------------------
+
+clear; clc;
+
+% Base directories for input and output files
+clusterDir = 'D:\IND1093_1723_c38\Cluster';
+sampleDir = 'D:\IND1093_1723_c38\Sample';
+shapefileDirs = struct(...
+    'IND', 'D:\IND1093_1723_c38\OSM\GEE_ESRI\IND_sample_1097_cities_10m_nonresi_ESRI', ...
+    'RES', 'D:\IND1093_1723_c38\OSM\GEE_ESRI\RES_sample_1097_cities_10m_ESRI', ...
+    'NIND', 'D:\IND1093_1723_c38\OSM\GEE_ESRI\NIND_sample_test_1097_cities_10m_ESRI');
+
+% Load cluster numbering and sample size
+cd(clusterDir);
+clusterFile = dir('Cluster38_numbering.csv');
+AA = readtable(clusterFile(1).name);
+
+sampleSizeFile = dir('Cluster38_samplesize.csv');
+Samsiz = readtable(sampleSizeFile(1).name);
+
+% Process samples for each land type (IND, RES, NIND)
+landTypes = {'IND', 'RES', 'NIND'};
+sampleCounts = [5000, 25000, 5000];  % Number of random samples for each category
+
+for landTypeIdx = 1:length(landTypes)
+    landType = landTypes{landTypeIdx};
+    sampleCount = sampleCounts(landTypeIdx);
+    shapefileDir = shapefileDirs.(landType);
+    
+    % Process each cluster
+    for clust = 1:38
+        idx1 = find(table2array(AA(:, 2)) == clust);
+        A2 = AA(idx1, :);  % Extract entries for the current cluster
+
+        Tfin = [];
+
+        % Process each shapefile in the cluster
+        for i = 1:size(A2, 1)
+            cd(shapefileDir);
+            sampleFilePattern = sprintf('*_sample_80_*_%02d.shp', table2array(A2(i, 1)));
+            ls2 = dir(sampleFilePattern);
+            
+            if ~isempty(ls2)
+                S = shaperead(ls2(1).name);  % Read shapefile
+                dbfspec = makedbfspec(S);    % Analyze the geographic data structure
+                
+                T = struct2table(S);         % Convert shapefile structure to table
+                T.Geometry = repmat({'Point'}, height(T), 1);  % Set geometry type
+                
+                T = T(:, 1:3);  % Extract relevant columns
+                Tfin = [Tfin; T];  % Append to the final table
+            end
+        end
+
+        % Skip further processing if no data was found for this cluster
+        if isempty(Tfin)
+            continue;
+        end
+
+        % Add 'class' column (0 = IND, 1 = RES, 1 = NIND)
+        classValue = landTypeIdx - 1;  % 0 for IND, 1 for RES and NIND
+        D = array2table(ones(size(Tfin, 1), 1) * classValue, 'VariableNames', {'class'});
+        T1 = [Tfin, D];  % Append class column to the data
+
+        % Select a random subset of rows based on the sample size
+        numSamples = table2array(Samsiz(clust, landTypeIdx + 1));  % Column 2 for IND, 4 for RES, 3 for NIND
+        randIndices = randperm(size(T1, 1), min(numSamples, size(T1, 1)));
+        randomSample = T1(randIndices, :);
+
+        % Modify dbfspec to match the new structure
+        FN = fieldnames(dbfspec);
+        fields = FN(1:end-1);
+        dbfspec = rmfield(dbfspec, fields);  % Remove unused fields
+        
+        oldName = fieldnames(dbfspec){1};
+        dbfspec.class = dbfspec.(oldName);  % Rename the field to 'class'
+        dbfspec = rmfield(dbfspec, oldName);
+        dbfspec.class.FieldName = 'class';  % Update field name
+
+        % Convert the table back to a structure and write the shapefile
+        S1 = table2struct(randomSample);
+        outputSubdir = fullfile(sampleDir, [landType, '_sample_cluster38_final']);
+        if ~exist(outputSubdir, 'dir')
+            mkdir(outputSubdir);
+        end
+        filename = fullfile(outputSubdir, sprintf('%s_%d_train_cluster_%02d.shp', landType, sampleCount, clust));
+        shapewrite(S1, filename, 'DbfSpec', dbfspec);
+    end
+end
+
+% -------------------------------------------------------------------------
+% End of Script
+% -------------------------------------------------------------------------
