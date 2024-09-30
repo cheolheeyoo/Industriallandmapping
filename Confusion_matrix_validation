@@ -1,0 +1,72 @@
+%% Confusion Matrix Calculation
+clear all; clc;
+
+% Initialize result storage
+resultFin = [];
+mm = 112;  % Random seed for reproducibility
+year = 2023;  % Specify the year of the analysis
+
+% Add path for the confusion matrix function and change directory to results folder
+addpath('D:\IND_mapping_2023\code\confusion matrix\confusion matrix');
+cd('D:\IND1093_1723_c38\Results_v2\Kernel\1093_IND_mapping_cluster38_10m_0818_bf50');
+
+% List all CSV files in the directory
+ls = dir('*.csv');
+
+% Initialize matrices to store performance metrics
+Finalmatrix = zeros(38, year - 2016);
+Finalmatrix2 = zeros(38, year - 2016);
+Finalmatrix3 = zeros(38, year - 2016);
+FinalPA = zeros(38, year - 2016);
+FinalUA = zeros(38, year - 2016);
+
+% Initialize total feature matrix
+totalF = [];
+
+% Loop through each CSV file
+for i = 1:38
+    % Read the CSV file into a table
+    AA = readtable(ls(i).name);
+    
+    % Extract the relevant columns
+    A2 = table2array(AA(:, end-1));  % Assuming the second last column is prediction
+    A3 = [zeros(1000, 1); ones(1000, 1)];  % Ground truth labels: 0 (class 1) and 1 (class 2)
+    
+    % Combine predictions with ground truth
+    A2 = [A2, A3];
+    
+    % Remove rows with negative predictions (if any)
+    A2 = A2(A2(:, 1) >= 0, :);
+    
+    % Select 1000 samples from each class (0 and 1)
+    rng(mm, 'twister');  % Set the random seed for reproducibility
+    
+    idx1 = find(A2(:, 2) == 0);  % Indices for class 0
+    selected_indices1 = randsample(idx1, 1000);  % Randomly sample 1000 instances of class 0
+    A22 = A2(selected_indices1, :);
+    
+    idx2 = find(A2(:, 2) == 1);  % Indices for class 1
+    selected_indices2 = randsample(idx2, 1000);  % Randomly sample 1000 instances of class 1
+    A23 = A2(selected_indices2, :);
+    
+    % Combine the selected samples for both classes
+    Final = [A22; A23];
+    
+    % Append the results to the total feature matrix
+    totalF = [totalF; Final];
+    
+    % Compute the confusion matrix and metrics using the confusion function
+    [c_matrixp, Result] = confusion.getMatrix(Final(:, 2)', Final(:, 1)');
+    
+    % Store performance metrics for current iteration
+    Finalmatrix(i, year - 2016) = Result.Accuracy;
+    Finalmatrix2(i, year - 2016) = Result.F1_score;
+    Finalmatrix3(i, year - 2016) = Result.Kappa;
+    
+    % Calculate Producer's and User's Accuracy for class 0
+    FinalPA(i, year - 2016) = c_matrixp(1, 1) / 1000;
+    FinalUA(i, year - 2016) = c_matrixp(1, 1) / (c_matrixp(1, 1) + c_matrixp(2, 1));
+end
+
+% Calculate the confusion matrix and results for the entire dataset
+[c_matrixp_total, Result_total] = confusion.getMatrix(totalF(:, 2)', totalF(:, 1)');
