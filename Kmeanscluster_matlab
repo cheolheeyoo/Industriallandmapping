@@ -1,0 +1,45 @@
+% -------------------------------------------------------------------------
+% Script to perform K-means clustering and summarize results 
+% -------------------------------------------------------------------------
+
+clearvars -except AA NINDtest  % Clear all variables except AA and NINDtest
+
+% Initialize final result storage
+final = [];
+
+% Loop over different numbers of clusters (mm)
+for mm = 1:50
+    for mmm = 14410  % Set specific seed for random number generator
+        rng(mmm);  % Set the random seed to ensure reproducibility
+
+        % Perform K-means clustering with mm clusters on selected columns of AA
+        BB = kmeans(AA(:, [1, 2, 3, 4]), mm);
+
+        % Initialize result storage for each cluster
+        CCC = [];
+        CCC2 = [];
+        CCC3 = [];
+
+        % Loop over each cluster (ii) to calculate sums for columns 5, 6, and 7
+        for ii = 1:mm
+            idx = find(BB == ii);  % Get indices of data points in cluster ii
+            
+            % Sum column 5, 6, and 7 for points in the current cluster
+            CCC = [CCC; sum(AA(idx, 5))];
+            CCC2 = [CCC2; sum(AA(idx, 6))];
+            CCC3 = [CCC3; sum(AA(idx, 7))];
+        end
+
+        % Store the minimum values for each summary (columns 5, 6, and 7)
+        final(mmm, 1) = min(CCC);
+        final(mmm, 2) = min(CCC2);
+        final(mmm, 3) = min(CCC3);
+    end
+
+    % Store the maximum values across the runs for the current cluster count (mm)
+    finfin(mm, :) = max(final);
+end
+
+% Perform cluster evaluation using the Calinski-Harabasz criterion
+rng(14410);  % Set random seed for reproducibility
+eva = evalclusters(AA(:, [1, 2, 3, 4]), 'kmeans', 'CalinskiHarabas
