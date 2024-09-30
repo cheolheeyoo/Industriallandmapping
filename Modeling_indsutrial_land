@@ -1,0 +1,169 @@
+// Load the required library
+var oeel = require('users/OEEL/lib:loadAll');
+
+// Load the feature collection for the region boundaries
+var regionCol = ee.FeatureCollection("users/yoclhe13/1093_IND_1723_shapefile/1093_urban_boundary_rect_cluster38");
+
+// Set the year for analysis
+var year = 2017;
+
+// Circle radius for texture analysis for each cluster
+var circleRadii = [50, 50, 50, 50, 50, 20, 50, 20, 10, 10, 10, 10, 10, 10, 10, 50, 50, 20, 10, 30, 30, 10, 10, 10, 50, 10, 10, 20, 30, 20, 40, 20, 30, 20, 20, 30, 10, 50];
+
+// Define start and end date for the year
+var startDate = year + '-01-01';
+var endDate = year + '-12-31';
+
+// Function to pad cluster number with leading zeros
+function padWithLeadingZeros(number, length) {
+    var numberString = number.toString();
+    while (numberString.length < length) {
+        numberString = '0' + numberString;
+    }
+    return numberString;
+}
+
+// Loop through all 38 clusters
+for (var i = 0; i < 38; i++) {
+    var cir = circleRadii[i];
+    var cluster = i + 1;
+
+    // Filter the region collection by cluster
+    var total_region = regionCol.filter(ee.Filter.eq('Cluster38', cluster));
+
+    // Load training and test points for the current cluster
+    var trainpt = ee.FeatureCollection("users/yoclhe13/1093_IND_1723_shapefile/Train_cluster_38_final")
+                     .filterBounds(total_region.geometry());
+    var testpt = ee.FeatureCollection("users/yoclhe13/1093_IND_1723_shapefile/Test_cluster_38_final")
+                    .filter(ee.Filter.eq('Cluster', cluster));
+
+    // Get WSF (World Settlement Footprint) data
+    var WSF = ee.ImageCollection("projects/sat-io/open-datasets/landcover/ESRI_Global-LULC_10m_TS")
+                  .filterDate(startDate, endDate);
+    var WSF4 = WSF.mosaic().reproject({ crs: 'EPSG:4326', scale: 10 }).eq(7).clip(total_region);
+    var WSFbuffer = ee.Image(1).cumulativeCost({ source: WSF4, maxDistance: 120 }).lt(120).gte(0);
+
+    // Filter and mask Sentinel-2 imagery, and apply cloud masking using the CLOUD_SCORE_PLUS collection
+    var l8 = ee.ImageCollection('COPERNICUS/S2_HARMONIZED');
+    var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+    var QA_BAND = 'cs_cdf';
+    var CLEAR_THRESHOLD = 0.60;
+
+    var l8FiltMasked = l8.filterBounds(total_region)
+                          .filterDate(startDate, endDate)
+                          .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
+                          .linkCollection(csPlus, [QA_BAND])
+                          .map(function(img) {
+                              return img.updateMask(img.select(QA_BAND).gte(CLEAR_THRESHOLD));
+                          });
+
+    var l8compositeMasked = l8FiltMasked.median().clip(total_region);
+
+    // Create band combinations from Sentinel-2 data (B1 - B10)
+    var band = l8compositeMasked.select(['B2']).unmask(-1).rename(['B1']);
+    band = band.addBands(l8compositeMasked.select(['B3']).unmask(-1).rename(['B2']));
+    band = band.addBands(l8compositeMasked.select(['B4']).unmask(-1).rename(['B3']));
+    band = band.addBands(l8compositeMasked.select(['B5']).unmask(-1).rename(['B4']));
+    band = band.addBands(l8compositeMasked.select(['B6']).unmask(-1).rename(['B5']));
+    band = band.addBands(l8compositeMasked.select(['B7']).unmask(-1).rename(['B6']));
+    band = band.addBands(l8compositeMasked.select(['B8']).unmask(-1).rename(['B7']));
+    band = band.addBands(l8compositeMasked.select(['B8A']).unmask(-1).rename(['B8']));
+    band = band.addBands(l8compositeMasked.select(['B11']).unmask(-1).rename(['B9']));
+    band = band.addBands(l8compositeMasked.select(['B12']).unmask(-1).rename(['B10']));
+
+    // Add nighttime lights data
+    var nighttime = ee.ImageCollection('NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG')
+                       .filterDate(startDate, endDate)
+                       .select('avg_rad')
+                       .median()
+                       .reproject({ crs: 'EPSG:4326', scale: 10 })
+                       .unmask(-1)
+                       .clip(total_region);
+    band = band.addBands(nighttime.rename(['B36']));
+
+    // Add LCZ (Local Climate Zones) data
+    var LCZ = ee.ImageCollection('RUB/RUBCLIM/LCZ/global_lcz_map/latest')
+                  .mosaic()
+                  .clip(total_region);
+    band = band.addBands(LCZ.select('LCZ_Filter').reproject({ crs: 'EPSG:4326', scale: 10 }).unmask(-1).rename(['B39']));
+
+    // Add GHM (Global Human Modification) data
+    var human = ee.Image("projects/sat-io/open-datasets/GHM/ghm_v15_2017_300_60land")
+                   .select('constant')
+                   .reproject({ crs: 'EPSG:4326', scale: 10 })
+                   .unmask(-1)
+                   .clip(total_region);
+    band = band.addBands(human.rename(['B40']));
+
+    // Add FABDEM (Digital Elevation Model) data
+    var fabdem = ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
+                    .mosaic()
+                    .clip(total_region);
+    band = band.addBands(fabdem.select('b1').reproject({ crs: 'EPSG:4326', scale: 10 }).unmask(-1).rename(['B42']));
+
+    // Add GLCM (Gray Level Co-occurrence Matrix) texture features
+    var texture3 = l8compositeMasked.multiply(10000).toInt().glcmTexture({ size: cir });
+    band = band.addBands(texture3.select(['B2_contrast']).unmask(-1).rename(['B50']));
+    band = band.addBands(texture3.select(['B3_contrast']).unmask(-1).rename(['B51']));
+    band = band.addBands(texture3.select(['B4_contrast']).unmask(-1).rename(['B52']));
+    band = band.addBands(texture3.select(['B8_contrast']).unmask(-1).rename(['B53']));
+
+    // Add latitude and longitude images
+    var lonImage = ee.Image.pixelLonLat().select('longitude').reproject({ crs: 'EPSG:4326', scale: 10 });
+    var latImage = ee.Image.pixelLonLat().select('latitude').reproject({ crs: 'EPSG:4326', scale: 10 });
+    band = band.addBands(lonImage.rename(['B65']));
+    band = band.addBands(latImage.rename(['B66']));
+
+    // Add built surface and volume from GHSL
+    var image_2020 = ee.Image('JRC/GHSL/P2023A/GHS_BUILT_S/2020');
+    band = band.addBands(image_2020.select('built_surface_nres').reproject({ crs: 'EPSG:4326', scale: 10 }).unmask(-1).rename(['B68']));
+    var image2_2020 = ee.Image('JRC/GHSL/P2023A/GHS_BUILT_V/2020');
+    band = band.addBands(image2_2020.select('built_volume_nres').reproject({ crs: 'EPSG:4326', scale: 10 }).unmask(-1).rename(['B71']));
+
+    // Select bands for classification
+    var bands = band.bandNames();
+    var imageCl = band.select(bands).updateMask(WSFbuffer);
+
+    // Sample training points
+    var training = imageCl.sampleRegions({
+        collection: trainpt,
+        properties: ['class'],
+        scale: 10,
+        tileScale: 16
+    }).filter(ee.Filter.neq('B1', null)).filter(ee.Filter.neq('B1', -1)); // Remove null pixels
+
+    // Train random forest classifier
+    var trainedRf = ee.Classifier.smileRandomForest({ numberOfTrees: 250 }).train({
+        features: training,
+        classProperty: 'class',
+        inputProperties: bands
+    });
+
+    // Classify the image
+    var classifiedRf = imageCl.select(bands).classify(trainedRf);
+
+    // Sample validation points
+    var validation = imageCl.sampleRegions({
+        collection: testpt,
+        properties: ['class'],
+        scale: 10,
+        tileScale: 16
+    }).filter(ee.Filter.neq('B1', null)).filter(ee.Filter.neq('B1', -1));
+
+    // Classify validation points
+    var validatedRf = validation.classify(trainedRf);
+
+    // Compute accuracy
+    var validationAccuracyRf = validatedRf.errorMatrix('class', 'classification');
+    // Print accuracy results
+    print('RF: overall accuracy for cluster ' + cluster + ': ', validationAccuracyRf.accuracy());
+
+    // Export classified data and accuracy results
+    var clustersave = padWithLeadingZeros(cluster, 3);
+    Export.table.toDrive({
+        collection: ee.FeatureCollection(validatedRf),
+        description: 'Final_1096_final_cluster38_' + clustersave,
+        folder: '1093_IND_mapping_cluster38_10m_' + year,
+        fileFormat: 'CSV'
+    });
+}
