@@ -1,0 +1,175 @@
+// Import Open Earth Engine Library
+var oeel = require('users/OEEL/lib:loadAll');
+
+// Define cluster and year
+var cluster = 36;
+var year = 2017;
+var i = cluster - 1;
+
+// Load the region collection (urban boundary)
+var regionCol = ee.FeatureCollection("users/yoclhe13/1093_IND_1723_shapefile/1093_urban_boundary_rect_cluster38");
+
+// Define circular kernel sizes for texture analysis
+var cirall = [50,50,50, 50, 50, 20, 50, 20, 10, 10, 10, 10, 10, 10, 10, 50, 50, 20, 10, 30, 30, 10, 10, 10, 50, 10, 10, 20, 30, 20, 40, 20, 30, 20, 20, 30, 10, 50];
+var cir = cirall[i];
+
+// Filter region based on the selected cluster
+var total_region = regionCol.filter(ee.Filter.eq('Cluster38', cluster));
+
+// Load training and testing points filtered by region
+var trainpt = ee.FeatureCollection("users/yoclhe13/1093_IND_1723_shapefile/Train_cluster_38_final").filterBounds(total_region.geometry());
+var testpt = ee.FeatureCollection("users/yoclhe13/1093_IND_1723_shapefile/Test_cluster_38_origin").filterBounds(total_region.geometry());
+
+// Define date range
+var startDate = year + '-01-01';
+var endDate = year + '-12-31';
+
+// Load WSF (World Settlement Footprint) for the selected year
+var WSF = ee.ImageCollection("projects/sat-io/open-datasets/landcover/ESRI_Global-LULC_10m_TS").filterDate(startDate, endDate);
+var WSF4 = WSF.mosaic().reproject({crs: 'EPSG:4326', scale: 10}).eq(7).clip(total_region);
+var WSFbuffer = ee.Image(1).cumulativeCost({source: WSF4, maxDistance: 120}).lt(120).gte(0);
+
+// Load Sentinel-2 imagery (S2_HARMONIZED) and Cloud Score Plus (CSP) for cloud masking
+var l8 = ee.ImageCollection('COPERNICUS/S2_HARMONIZED');
+var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+var QA_BAND = 'cs_cdf';
+var CLEAR_THRESHOLD = 0.60;
+
+// Filtering Sentinel-2 and applying cloud mask
+var l8FiltMasked = l8.filterBounds(total_region)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
+    .linkCollection(csPlus, [QA_BAND])
+    .map(function(img) {
+      return img.updateMask(img.select(QA_BAND).gte(CLEAR_THRESHOLD));
+    });
+
+// Median composite of cloud-masked Sentinel-2 images
+var l8compositeMasked = l8FiltMasked.median().clip(total_region);
+
+// Select and rename Sentinel-2 bands
+var band = l8compositeMasked.select(['B2']).unmask(-1).rename(['B1'])
+    .addBands(l8compositeMasked.select(['B3']).unmask(-1).rename(['B2']))
+    .addBands(l8compositeMasked.select(['B4']).unmask(-1).rename(['B3']))
+    .addBands(l8compositeMasked.select(['B5']).unmask(-1).rename(['B4']))
+    .addBands(l8compositeMasked.select(['B6']).unmask(-1).rename(['B5']))
+    .addBands(l8compositeMasked.select(['B7']).unmask(-1).rename(['B6']))
+    .addBands(l8compositeMasked.select(['B8']).unmask(-1).rename(['B7']))
+    .addBands(l8compositeMasked.select(['B8A']).unmask(-1).rename(['B8']))
+    .addBands(l8compositeMasked.select(['B11']).unmask(-1).rename(['B9']))
+    .addBands(l8compositeMasked.select(['B12']).unmask(-1).rename(['B10']));
+
+// Add nighttime lights from VIIRS
+var dataset = ee.ImageCollection('NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG').filter(ee.Filter.date(startDate, endDate));
+var nighttime = dataset.select('avg_rad');
+var nighttimeMasked = nighttime.median().reproject({crs: 'EPSG:4326', scale: 10}).unmask(-1).clip(total_region);
+band = band.addBands(nighttimeMasked.select(['avg_rad']).rename(['B36']));
+
+// Add Local Climate Zones (LCZ)
+var LCZ = ee.ImageCollection('RUB/RUBCLIM/LCZ/global_lcz_map/latest').mosaic().clip(total_region);
+band = band.addBands(LCZ.select(['LCZ_Filter']).reproject({crs: 'EPSG:4326', scale: 10}).unmask(-1).rename(['B39']));
+
+// Add Human Modification Index
+var humanDataset = ee.Image("projects/sat-io/open-datasets/GHM/ghm_v15_2017_300_60land");
+var human = humanDataset.select('constant').reproject({crs: 'EPSG:4326', scale: 10}).unmask(-1).clip(total_region);
+band = band.addBands(human.select(['constant']).rename(['B40']));
+
+// Add FABDEM dataset for elevation
+var fabdem = ee.ImageCollection("projects/sat-io/open-datasets/FABDEM").mosaic().clip(total_region);
+band = band.addBands(fabdem.select(['b1']).reproject({crs: 'EPSG:4326', scale: 10}).unmask(-1).rename(['B42']));
+
+// Apply texture analysis (GLCM) to the Sentinel-2 composite
+var texture3 = l8compositeMasked.multiply(10000).toInt().glcmTexture({size: cir});
+band = band.addBands(texture3.select(['B2_contrast']).unmask(-1).rename(['B50']))
+    .addBands(texture3.select(['B3_contrast']).unmask(-1).rename(['B51']))
+    .addBands(texture3.select(['B4_contrast']).unmask(-1).rename(['B52']))
+    .addBands(texture3.select(['B8_contrast']).unmask(-1).rename(['B53']))
+    .addBands(texture3.select(['B2_idm']).unmask(-1).rename(['B56']))
+    .addBands(texture3.select(['B3_idm']).unmask(-1).rename(['B57']))
+    .addBands(texture3.select(['B4_idm']).unmask(-1).rename(['B58']))
+    .addBands(texture3.select(['B8_idm']).unmask(-1).rename(['B59']));
+
+// Add latitude and longitude as additional bands
+var lonImage = ee.Image.pixelLonLat().select('longitude').reproject({crs: 'EPSG:4326', scale: 10});
+var latImage = ee.Image.pixelLonLat().select('latitude').reproject({crs: 'EPSG:4326', scale: 10});
+band = band.addBands(lonImage.select(['longitude']).unmask(-1).rename(['B65']))
+    .addBands(latImage.select(['latitude']).unmask(-1).rename(['B66']));
+
+// Add built-up surface and volume from GHSL
+var projectlayer = ee.Image('NASA/ASTER_GED/AG100_003');
+var targetProjection = projectlayer.projection();
+var image_2020 = ee.Image('JRC/GHSL/P2023A/GHS_BUILT_S/2020');
+var nonresi = image_2020.select(['built_surface_nres']).reproject(targetProjection).resample('bicubic').unmask(-1).rename(['B68']);
+band = band.addBands(nonresi);
+
+var image2_2020 = ee.Image('JRC/GHSL/P2023A/GHS_BUILT_V/2020');
+var volume2 = image2_2020.select(['built_volume_nres']).reproject(targetProjection).resample('bicubic').unmask(-1).rename(['B71']);
+band = band.addBands(volume2);
+
+// Prepare image for classification by masking with WSF buffer
+var imageCl = band.updateMask(WSFbuffer);
+
+// Sample training points
+var training = imageCl.sampleRegions({
+  collection: trainpt,
+  properties: ['class'],
+  scale: 10,
+  tileScale: 16
+}).filter(ee.Filter.neq('B1', null)).filter(ee.Filter.neq('B1', -1));
+
+// Train a random forest classifier
+var trainedRf = ee.Classifier.smileRandomForest({numberOfTrees: 500}).train({
+  features: training,
+  classProperty: 'class',
+  inputProperties: band.bandNames()
+});
+
+// Get list of regions (cities) for classification
+var cityList = ee.List(total_region.aggregate_array('ID_HDC_G0'));
+
+// Iterate over each city, classify the image, and export
+cityList.evaluate(function(cityNames) {
+  cityNames.forEach(function(cityName) {
+
+    // Filter region for the current city
+    var total_region2 = regionCol.filter(ee.Filter.eq('ID_HDC_G0', cityName));
+
+    // Filter and mask Sentinel-2 images for the current city
+    var l8FiltMasked = l8.filterBounds(total_region2)
+        .filterDate(startDate, endDate)
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
+        .linkCollection(csPlus, [QA_BAND])
+        .map(function(img) {
+          return img.updateMask(img.select(QA_BAND).gte(CLEAR_THRESHOLD));
+        });
+
+    var l8compositeMasked = l8FiltMasked.median().clip(total_region2);
+
+    // Select and rename Sentinel-2 bands for the current city
+    var band = l8compositeMasked.select(['B2']).unmask(-1).rename(['B1'])
+        .addBands(l8compositeMasked.select(['B3']).unmask(-1).rename(['B2']))
+        .addBands(l8compositeMasked.select(['B4']).unmask(-1).rename(['B3']))
+        .addBands(l8compositeMasked.select(['B5']).unmask(-1).rename(['B4']))
+        .addBands(l8compositeMasked.select(['B6']).unmask(-1).rename(['B5']))
+        .addBands(l8compositeMasked.select(['B7']).unmask(-1).rename(['B6']))
+        .addBands(l8compositeMasked.select(['B8']).unmask(-1).rename(['B7']))
+        .addBands(l8compositeMasked.select(['B8A']).unmask(-1).rename(['B8']))
+        .addBands(l8compositeMasked.select(['B11']).unmask(-1).rename(['B9']))
+        .addBands(l8compositeMasked.select(['B12']).unmask(-1).rename(['B10']));
+
+    // Mask the image with WSF buffer and classify using the trained Random Forest
+    var imageCl2 = band.updateMask(WSFbuffer);
+    var classifiedRf = imageCl2.classify(trainedRf).updateMask(WSF4);
+
+    // Export the classified image for the current city
+    Export.image.toAsset({
+      image: classifiedRf,
+      description: 'Ind_' + cityName + '_v' + year,
+      assetId: 'IND_ntree500_10m_cluster' + (cluster < 10 ? '0' : '') + cluster + '/' + cityName + '_v' + year,
+      region: total_region2.geometry(),
+      scale: 10,
+      crs: 'EPSG:4326',
+      maxPixels: 1e13
+    });
+  });
+});
