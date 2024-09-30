@@ -1,0 +1,44 @@
+
+
+var boundary = ee.FeatureCollection("users/yoclhe13/1093_IND_shapefile/1093_urban_boundary");
+
+// Function to calculate bounding rectangle for each feature and keep original properties
+function addBufferedBounds(feature) {
+  var bounds = feature.bounds();
+  var coords = ee.List(bounds.geometry().coordinates().get(0));
+
+  // Get the min and max coordinates
+  var xmin = ee.Number(ee.List(coords.get(0)).get(0));
+  var ymin = ee.Number(ee.List(coords.get(0)).get(1));
+  var xmax = ee.Number(ee.List(coords.get(2)).get(0));
+  var ymax = ee.Number(ee.List(coords.get(2)).get(1));
+
+  // Define the buffer distance in degrees (approximately 1.5 km)
+  var bufferDistance = 1500; // in meters
+  var bufferDegrees = bufferDistance / 111320; // approximate conversion from meters to degrees
+
+  // Expand the bounds by the buffer distance
+  var newXmin = xmin.subtract(bufferDegrees);
+  var newYmin = ymin.subtract(bufferDegrees);
+  var newXmax = xmax.add(bufferDegrees);
+  var newYmax = ymax.add(bufferDegrees);
+
+  // Create the new bounding box
+  var bufferedBounds = ee.Geometry.Rectangle([newXmin, newYmin, newXmax, newYmax]);
+
+  // Create a new feature with the buffered bounds and copy properties from the original feature
+  return ee.Feature(bufferedBounds).copyProperties(feature);
+}
+
+var rectangleBounds = boundary.map(addBufferedBounds);
+
+// Export the rectangleBounds as a new asset
+Export.table.toAsset({
+  collection: rectangleBounds,
+  description: 'bufferedBoundsExport',
+  assetId: 'users/yoclhe13/1093_IND_shapefile/1093_urban_boundary_rect'
+});
+
+
+
+
