@@ -5,6 +5,7 @@
 
 clear; clc;
 
+
 % Define the base directory for shapefiles
 baseDir = 'D:\IND_1093\OSM\1093_OSM_shp';
 outputDir = 'D:\IND_1093\OSM\osm_shp_area_extraction_area';
