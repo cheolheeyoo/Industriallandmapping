@@ -1,0 +1,102 @@
+import os
+import numpy as np
+import rasterio
+from scipy.ndimage import generic_filter
+import pandas as pd
+
+# Load the list of city IDs from the CSV file
+city_id_file = r"D:\IND1093_review_c43\Table\city_ID_list.csv"
+city_ids = pd.read_csv(city_id_file)["ID_HDC_G0"].tolist()
+
+# Define input and output folder paths
+input_folder = r"D:\IND1093_review_c43\Final_map_10m"
+output_folder = r"D:\IND1093_review_c43\Filtered_map_10m"
+
+# Ensure the output folder exists
+os.makedirs(output_folder, exist_ok=True)
+
+# Define the years to process
+years = list(range(2017, 2024))  # From 2017 to 2023
+
+# Define the sliding window size
+window_size = 3
+half_window = window_size // 2
+
+# Function to calculate mode for a sliding window
+def sliding_window_mode(values):
+    """Calculate the mode of a sliding window."""
+    return np.bincount(values).argmax()  # Most frequent value in the window
+
+# Process each city ID
+for city_id in city_ids:
+    print(f"Processing City ID: {city_id}")
+    
+    # Construct file paths for the current city
+    file_paths = [
+        os.path.join(
+            input_folder, 
+            f"Industrial_land_cluster43_new_v{year}_afterGF", 
+            f"Industrial_land_v{year}_{city_id}_v1.tif"
+        )
+        for year in years
+    ]
+    output_paths = [
+        os.path.join(
+            output_folder, 
+            f"Industrial_land_cluster43_new_v{year}_afterGFTF", 
+            f"Industrial_land_v{year}_{city_id}_v1.tif"
+        )
+        for year in years
+    ]
+    
+    # Check if all input files exist
+    if not all(os.path.exists(fp) for fp in file_paths):
+        print(f"Some input files are missing for City ID {city_id}. Skipping...")
+        continue
+
+    # Read the first TIF file to extract dimensions and metadata
+    with rasterio.open(file_paths[0]) as src:
+        rows, cols = src.shape
+        transform = src.transform
+        crs = src.crs
+
+    # Load all TIF files into a 3D NumPy array (rows, cols, years)
+    raster_stack = np.zeros((rows, cols, len(years)), dtype=np.uint8)
+    for i, file_path in enumerate(file_paths):
+        with rasterio.open(file_path) as src:
+            raster_stack[:, :, i] = src.read(1)
+
+    # Pad the raster stack along the temporal dimension to handle edges
+    padded_stack = np.pad(
+        raster_stack, 
+        ((0, 0), (0, 0), (half_window, half_window)), 
+        mode='edge'
+    )
+
+    # Apply the sliding window mode filter across the temporal dimension
+    filtered_stack = np.zeros_like(raster_stack, dtype=np.uint8)
+    for i in range(len(years)):
+        # Extract a 3-year temporal window
+        temporal_window = padded_stack[:, :, i:i + window_size]
+        # Compute the mode for the temporal window at each pixel
+        filtered_stack[:, :, i] = np.apply_along_axis(sliding_window_mode, 2, temporal_window)
+
+    # Save the filtered images to new TIF files
+    for i, output_path in enumerate(output_paths):
+        # Ensure output subfolder exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with rasterio.open(
+            output_path,
+            'w',
+            driver='GTiff',
+            height=rows,
+            width=cols,
+            count=1,
+            dtype=np.uint8,
+            crs=crs,
+            transform=transform,
+        ) as dst:
+            dst.write(filtered_stack[:, :, i], 1)
+        print(f"Filtered TIF for year {years[i]} saved to: {output_path}")
+
+print("Mode filtering complete for all cities.")
