@@ -2,6 +2,7 @@
 
 var boundary = ee.FeatureCollection("users/yoclhe13/1093_IND_shapefile/1093_urban_boundary");
 
+
 // Function to calculate bounding rectangle for each feature and keep original properties
 function addBufferedBounds(feature) {
   var bounds = feature.bounds();
